@@ -24,6 +24,8 @@ class STN3d(nn.Module):
         self.bn4 = nn.BatchNorm1d(512)
         self.bn5 = nn.BatchNorm1d(256)
 
+    # @@ T-Net 实现
+    # 本质上是小型的 pointnet，mlp + maxpool 提特征，fc 拟合旋转矩阵
     def forward(self, x):
         batchsize = x.size()[0]
         x = F.relu(self.bn1(self.conv1(x)))
@@ -40,11 +42,13 @@ class STN3d(nn.Module):
             batchsize, 1)
         if x.is_cuda:
             iden = iden.cuda()
+        # 相当于也学了个残差
         x = x + iden
         x = x.view(-1, 3, 3)
         return x
 
 
+# STNkd 把3推广到k，将特征变换到特定姿态
 class STNkd(nn.Module):
     def __init__(self, k=64):
         super(STNkd, self).__init__()
@@ -85,6 +89,7 @@ class STNkd(nn.Module):
         return x
 
 
+# mlp + max pool
 class PointNetEncoder(nn.Module):
     def __init__(self, global_feat=True, feature_transform=False, channel=3):
         super(PointNetEncoder, self).__init__()
@@ -102,15 +107,21 @@ class PointNetEncoder(nn.Module):
 
     def forward(self, x):
         B, D, N = x.size()
+        # 输出旋转矩阵
         trans = self.stn(x)
+        # B,N,D
         x = x.transpose(2, 1)
         if D > 3:
             feature = x[:, :, 3:]
+            # 取前三维为坐标
             x = x[:, :, :3]
+        # tensor 乘法，第一维为 batch_size 必须相等
         x = torch.bmm(x, trans)
         if D > 3:
             x = torch.cat([x, feature], dim=2)
+        # B,D,N
         x = x.transpose(2, 1)
+        # mlp
         x = F.relu(self.bn1(self.conv1(x)))
 
         if self.feature_transform:
@@ -121,11 +132,14 @@ class PointNetEncoder(nn.Module):
         else:
             trans_feat = None
 
+        # 中间输出的点特征
         pointfeat = x
+        # mlp
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))
         x = torch.max(x, 2, keepdim=True)[0]
         x = x.view(-1, 1024)
+        # ! 只输出全局特征，输出T-Net预测的旋转矩阵用于计算loss
         if self.global_feat:
             return x, trans, trans_feat
         else:
@@ -133,6 +147,7 @@ class PointNetEncoder(nn.Module):
             return torch.cat([x, pointfeat], 1), trans, trans_feat
 
 
+# ! k*k旋转矩阵损失函数，旋转矩阵是正交阵，AA^T=I，以 loss = AA^T - I
 def feature_transform_reguliarzer(trans):
     d = trans.size()[1]
     I = torch.eye(d)[None, :, :]

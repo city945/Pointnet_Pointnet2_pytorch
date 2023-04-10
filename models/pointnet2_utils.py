@@ -16,6 +16,7 @@ def pc_normalize(pc):
     pc = pc / m
     return pc
 
+# $$ 张量求欧式距离
 def square_distance(src, dst):
     """
     Calculate Euclid distance between each two points.
@@ -84,6 +85,7 @@ def farthest_point_sample(xyz, npoint):
     return centroids
 
 
+# @@ 球查询
 def query_ball_point(radius, nsample, xyz, new_xyz):
     """
     Input:
@@ -107,6 +109,7 @@ def query_ball_point(radius, nsample, xyz, new_xyz):
     return group_idx
 
 
+# @@ 采样分组的实现
 def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
     """
     Input:
@@ -138,6 +141,7 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
         return new_xyz, new_points
 
 
+# 最后一层 set abstraction 使用
 def sample_and_group_all(xyz, points):
     """
     Input:
@@ -149,7 +153,9 @@ def sample_and_group_all(xyz, points):
     """
     device = xyz.device
     B, N, C = xyz.shape
+    # new_xyz 置 0 
     new_xyz = torch.zeros(B, 1, C).to(device)
+    # 输出的 group 维度为 1
     grouped_xyz = xyz.view(B, 1, N, C)
     if points is not None:
         new_points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1)
@@ -158,6 +164,7 @@ def sample_and_group_all(xyz, points):
     return new_xyz, new_points
 
 
+# @@ set abstraction 实现
 class PointNetSetAbstraction(nn.Module):
     def __init__(self, npoint, radius, nsample, in_channel, mlp, group_all):
         super(PointNetSetAbstraction, self).__init__()
@@ -186,6 +193,7 @@ class PointNetSetAbstraction(nn.Module):
         if points is not None:
             points = points.permute(0, 2, 1)
 
+        # points 初值为 norm(可能为 None)
         if self.group_all:
             new_xyz, new_points = sample_and_group_all(xyz, points)
         else:

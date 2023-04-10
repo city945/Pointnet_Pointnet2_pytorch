@@ -19,6 +19,7 @@ class get_model(nn.Module):
         self.bn2 = nn.BatchNorm1d(256)
         self.relu = nn.ReLU()
 
+    # @@ pointnet
     def forward(self, x):
         x, trans, trans_feat = self.feat(x)
         x = F.relu(self.bn1(self.fc1(x)))
@@ -27,11 +28,15 @@ class get_model(nn.Module):
         x = F.log_softmax(x, dim=1)
         return x, trans_feat
 
+# loss 类
 class get_loss(torch.nn.Module):
     def __init__(self, mat_diff_loss_scale=0.001):
         super(get_loss, self).__init__()
         self.mat_diff_loss_scale = mat_diff_loss_scale
 
+    # @@ loss
+    # F.nll_loss: http://t.zoukankan.com/leebxo-p-11913939.html
+    # 输入 pred 各个类别的得分，数字类别标签如[2]，取 -pred[2] 作为 loss
     def forward(self, pred, target, trans_feat):
         loss = F.nll_loss(pred, target)
         mat_diff_loss = feature_transform_reguliarzer(trans_feat)

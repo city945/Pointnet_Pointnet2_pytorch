@@ -19,6 +19,7 @@ from pathlib import Path
 from tqdm import tqdm
 from data_utils.ModelNetDataLoader import ModelNetDataLoader
 
+# $$ 添加路径到环境变量 Path，配合 importlib，将目录作为包
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = BASE_DIR
 sys.path.append(os.path.join(ROOT_DIR, 'models'))
@@ -33,16 +34,21 @@ def parse_args():
     parser.add_argument('--num_category', default=40, type=int, choices=[10, 40],  help='training on ModelNet10/40')
     parser.add_argument('--epoch', default=200, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
+    # 原始点云降采样到多少再输入
     parser.add_argument('--num_point', type=int, default=1024, help='Point Number')
     parser.add_argument('--optimizer', type=str, default='Adam', help='optimizer for training')
     parser.add_argument('--log_dir', type=str, default=None, help='experiment root')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate')
+    # 输入法向量特征
     parser.add_argument('--use_normals', action='store_true', default=False, help='use normals')
+    # 保存降采样结果，从而不必每次都降采样，加速
     parser.add_argument('--process_data', action='store_true', default=False, help='save data offline')
+    # 使用 fps 采样，否则取前n个点 
     parser.add_argument('--use_uniform_sample', action='store_true', default=False, help='use uniform sampiling')
     return parser.parse_args()
 
 
+# ?
 def inplace_relu(m):
     classname = m.__class__.__name__
     if classname.find('ReLU') != -1:
@@ -59,22 +65,35 @@ def test(model, loader, num_class=40):
         if not args.use_cpu:
             points, target = points.cuda(), target.cuda()
 
+        # （B,3,N)
         points = points.transpose(2, 1)
         pred, _ = classifier(points)
+        # pred_choice = pred.data.max(axis=1)[1]
         pred_choice = pred.data.max(1)[1]
 
+        # @@ 分类任务，计算每个类别的准确率
+        # 遍历Batch中的类别
+        # target: shape(B=24)
         for cat in np.unique(target.cpu()):
+            # target[target == cat] 某个类别下，应该预测为该类的下标
+            # pred_choice[target == cat] 某个类别下，真值为该类的实际预测值
+            # 该Batch里，正确识别为该类的个数
             classacc = pred_choice[target == cat].eq(target[target == cat].long().data).cpu().sum()
+            # points[target == cat]的第 0 维为target中值为cat的个数
             class_acc[cat, 0] += classacc.item() / float(points[target == cat].size()[0])
+            # 该类经过的Batch个数
             class_acc[cat, 1] += 1
 
         correct = pred_choice.eq(target.long().data).cpu().sum()
         mean_correct.append(correct.item() / float(points.size()[0]))
 
+    # 此操作效果等同 np.mean(mean_correct)
     class_acc[:, 2] = class_acc[:, 0] / class_acc[:, 1]
     class_acc = np.mean(class_acc[:, 2])
     instance_acc = np.mean(mean_correct)
 
+    # instance_acc: 每个的准确率，分类正确的个数/总个数
+    # class_acc: 每个类别的准确率，某个类别分类正确的个数/数据集中该类别的个数
     return instance_acc, class_acc
 
 
@@ -87,14 +106,18 @@ def main(args):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     '''CREATE DIR'''
+    # $$ 创建目录
     timestr = str(datetime.datetime.now().strftime('%Y-%m-%d_%H-%M'))
     exp_dir = Path('./log/')
+    # 创建目录 ./log
     exp_dir.mkdir(exist_ok=True)
     exp_dir = exp_dir.joinpath('classification')
+    # 创建目录 ./log/classification
     exp_dir.mkdir(exist_ok=True)
     if args.log_dir is None:
         exp_dir = exp_dir.joinpath(timestr)
     else:
+        # 命令行指定为 pointnet2_cls_ssg
         exp_dir = exp_dir.joinpath(args.log_dir)
     exp_dir.mkdir(exist_ok=True)
     checkpoints_dir = exp_dir.joinpath('checkpoints/')
@@ -104,8 +127,10 @@ def main(args):
 
     '''LOG'''
     args = parse_args()
+    # python log 
     logger = logging.getLogger("Model")
     logger.setLevel(logging.INFO)
+    # 每句日志的前缀
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler = logging.FileHandler('%s/%s.txt' % (log_dir, args.model))
     file_handler.setLevel(logging.INFO)
@@ -125,7 +150,9 @@ def main(args):
 
     '''MODEL LOADING'''
     num_class = args.num_category
+    # 上面有把 model 加到 sys.path
     model = importlib.import_module(args.model)
+    # / 拷贝文件过去，仅仅是便于浏览执行的代码，可以删除
     shutil.copy('./models/%s.py' % args.model, str(exp_dir))
     shutil.copy('models/pointnet2_utils.py', str(exp_dir))
     shutil.copy('./train_classification.py', str(exp_dir))
@@ -169,6 +196,7 @@ def main(args):
     for epoch in range(start_epoch, args.epoch):
         log_string('Epoch %d (%d/%s):' % (global_epoch + 1, epoch + 1, args.epoch))
         mean_correct = []
+        # 训练模式，开启BN
         classifier = classifier.train()
 
         scheduler.step()
@@ -176,10 +204,12 @@ def main(args):
             optimizer.zero_grad()
 
             points = points.data.numpy()
+            # 居然在训练的时候数据增强
             points = provider.random_point_dropout(points)
             points[:, :, 0:3] = provider.random_scale_point_cloud(points[:, :, 0:3])
             points[:, :, 0:3] = provider.shift_point_cloud(points[:, :, 0:3])
             points = torch.Tensor(points)
+            # (B,N,3) -> (B,3,N)
             points = points.transpose(2, 1)
 
             if not args.use_cpu:
@@ -188,13 +218,16 @@ def main(args):
             pred, trans_feat = classifier(points)
             loss = criterion(pred, target.long(), trans_feat)
             pred_choice = pred.data.max(1)[1]
+            # pred_choice = pred.data.max(axis=1)[1] # pred: shape(B=24, 40) -> shape(24)，target: shape(24)
 
+            # 数组比较，累加相等的个数
             correct = pred_choice.eq(target.long().data).cpu().sum()
             mean_correct.append(correct.item() / float(points.size()[0]))
             loss.backward()
             optimizer.step()
             global_step += 1
 
+        # 每个batch的平均准确率再平均，分母相同，相当于整体的准确率
         train_instance_acc = np.mean(mean_correct)
         log_string('Train Instance Accuracy: %f' % train_instance_acc)
 
