@@ -1,4 +1,11 @@
 """
+参数: 
+    --process_data 保存降采样结果，从而不必每次都降采样，加速
+    --use_uniform_sample 使用 fps 采样, 否则取前n个点
+    --use_normals 输入法向量特征
+"""
+
+"""
 Author: Benny
 Date: Nov 2019
 """
@@ -19,7 +26,6 @@ from pathlib import Path
 from tqdm import tqdm
 from data_utils.ModelNetDataLoader import ModelNetDataLoader
 
-# $$ 添加路径到环境变量 Path，配合 importlib，将目录作为包
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = BASE_DIR
 sys.path.append(os.path.join(ROOT_DIR, 'models'))
@@ -34,21 +40,16 @@ def parse_args():
     parser.add_argument('--num_category', default=40, type=int, choices=[10, 40],  help='training on ModelNet10/40')
     parser.add_argument('--epoch', default=200, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
-    # 原始点云降采样到多少再输入
     parser.add_argument('--num_point', type=int, default=1024, help='Point Number')
     parser.add_argument('--optimizer', type=str, default='Adam', help='optimizer for training')
     parser.add_argument('--log_dir', type=str, default=None, help='experiment root')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate')
-    # 输入法向量特征
     parser.add_argument('--use_normals', action='store_true', default=False, help='use normals')
-    # 保存降采样结果，从而不必每次都降采样，加速
     parser.add_argument('--process_data', action='store_true', default=False, help='save data offline')
-    # 使用 fps 采样，否则取前n个点 
     parser.add_argument('--use_uniform_sample', action='store_true', default=False, help='use uniform sampiling')
     return parser.parse_args()
 
 
-# ?
 def inplace_relu(m):
     classname = m.__class__.__name__
     if classname.find('ReLU') != -1:
@@ -106,18 +107,14 @@ def main(args):
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     '''CREATE DIR'''
-    # $$ 创建目录
     timestr = str(datetime.datetime.now().strftime('%Y-%m-%d_%H-%M'))
     exp_dir = Path('./log/')
-    # 创建目录 ./log
     exp_dir.mkdir(exist_ok=True)
     exp_dir = exp_dir.joinpath('classification')
-    # 创建目录 ./log/classification
     exp_dir.mkdir(exist_ok=True)
     if args.log_dir is None:
         exp_dir = exp_dir.joinpath(timestr)
     else:
-        # 命令行指定为 pointnet2_cls_ssg
         exp_dir = exp_dir.joinpath(args.log_dir)
     exp_dir.mkdir(exist_ok=True)
     checkpoints_dir = exp_dir.joinpath('checkpoints/')
@@ -127,10 +124,8 @@ def main(args):
 
     '''LOG'''
     args = parse_args()
-    # python log 
     logger = logging.getLogger("Model")
     logger.setLevel(logging.INFO)
-    # 每句日志的前缀
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler = logging.FileHandler('%s/%s.txt' % (log_dir, args.model))
     file_handler.setLevel(logging.INFO)
@@ -150,7 +145,6 @@ def main(args):
 
     '''MODEL LOADING'''
     num_class = args.num_category
-    # 上面有把 model 加到 sys.path
     model = importlib.import_module(args.model)
     # / 拷贝文件过去，仅仅是便于浏览执行的代码，可以删除
     shutil.copy('./models/%s.py' % args.model, str(exp_dir))
@@ -196,7 +190,6 @@ def main(args):
     for epoch in range(start_epoch, args.epoch):
         log_string('Epoch %d (%d/%s):' % (global_epoch + 1, epoch + 1, args.epoch))
         mean_correct = []
-        # 训练模式，开启BN
         classifier = classifier.train()
 
         scheduler.step()
@@ -215,6 +208,7 @@ def main(args):
             if not args.use_cpu:
                 points, target = points.cuda(), target.cuda()
 
+            # @:: points
             pred, trans_feat = classifier(points)
             loss = criterion(pred, target.long(), trans_feat)
             pred_choice = pred.data.max(1)[1]

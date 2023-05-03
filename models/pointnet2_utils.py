@@ -16,9 +16,9 @@ def pc_normalize(pc):
     pc = pc / m
     return pc
 
-# $$ 张量求欧式距离
 def square_distance(src, dst):
     """
+    计算两个点云直接，每个点对的欧式距离
     Calculate Euclid distance between each two points.
 
     src^T * dst = xn * xm + yn * ym + zn * zm；
@@ -43,6 +43,7 @@ def square_distance(src, dst):
 
 def index_points(points, idx):
     """
+    根据下标生成采样点云
 
     Input:
         points: input points data, [B, N, C]
@@ -63,6 +64,7 @@ def index_points(points, idx):
 
 def farthest_point_sample(xyz, npoint):
     """
+    fps, 先随机采样第一个点，取离采样点最远的点加入采样点并作为下一轮的参考点，迭代 N 次，返回 N 个采样点的下标
     Input:
         xyz: pointcloud data, [B, N, 3]
         npoint: number of samples
@@ -84,10 +86,16 @@ def farthest_point_sample(xyz, npoint):
         farthest = torch.max(distance, -1)[1]
     return centroids
 
-
-# @@ 球查询
+# @ query_ball_point
 def query_ball_point(radius, nsample, xyz, new_xyz):
     """
+    球查询, S 个待查询的点，对某个查询点，采样离其最近的 nsample 个点，不足 nsample 个的，最近的点重复多次
+    Args: 
+        nsample: 最大采样点个数
+        xyz: (B,N,3) fps 之前的点云
+        new_xyz: (B,S,3) fps 采样点云
+    Returns:
+        group_idx: (B,S,nsample) 分组点的下标
     Input:
         radius: local region radius
         nsample: max sample number in local region
@@ -99,17 +107,21 @@ def query_ball_point(radius, nsample, xyz, new_xyz):
     device = xyz.device
     B, N, C = xyz.shape
     _, S, _ = new_xyz.shape
+    # 初始化下标为 (B,S,N), 值从 1 到 N
     group_idx = torch.arange(N, dtype=torch.long).to(device).view(1, 1, N).repeat([B, S, 1])
     sqrdists = square_distance(new_xyz, xyz)
+    # 球邻域外的点下标标记为 N, 表示无效值
     group_idx[sqrdists > radius ** 2] = N
+    # 排序，固定取前 nsample 个，此时可能有一部分是邻域外的点，但这部分的点已标记为无效值
     group_idx = group_idx.sort(dim=-1)[0][:, :, :nsample]
+    # 取最近的点，广播为 (B,S,nsample)
     group_first = group_idx[:, :, 0].view(B, S, 1).repeat([1, 1, nsample])
     mask = group_idx == N
+    # 将前 nsample 个点中无效值的点，用最近的点的下标覆盖，得到类似 [34,196,385,34,34...]
     group_idx[mask] = group_first[mask]
     return group_idx
 
 
-# @@ 采样分组的实现
 def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
     """
     Input:
@@ -141,7 +153,6 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
         return new_xyz, new_points
 
 
-# 最后一层 set abstraction 使用
 def sample_and_group_all(xyz, points):
     """
     Input:
@@ -164,7 +175,6 @@ def sample_and_group_all(xyz, points):
     return new_xyz, new_points
 
 
-# @@ set abstraction 实现
 class PointNetSetAbstraction(nn.Module):
     def __init__(self, npoint, radius, nsample, in_channel, mlp, group_all):
         super(PointNetSetAbstraction, self).__init__()
@@ -193,7 +203,6 @@ class PointNetSetAbstraction(nn.Module):
         if points is not None:
             points = points.permute(0, 2, 1)
 
-        # points 初值为 norm(可能为 None)
         if self.group_all:
             new_xyz, new_points = sample_and_group_all(xyz, points)
         else:
@@ -229,8 +238,15 @@ class PointNetSetAbstractionMsg(nn.Module):
             self.conv_blocks.append(convs)
             self.bn_blocks.append(bns)
 
+    # @ PointNetSetAbstractionMsg
     def forward(self, xyz, points):
         """
+        Args:
+            xyz: (B,C,N) 特征空间中的点坐标，维度 C, 用于球查询 
+            points: (B,D,N) 点特征
+        Returns:
+            new_xyz: 
+            new_points_concat:
         Input:
             xyz: input points position data, [B, C, N]
             points: input points data, [B, D, N]
@@ -246,11 +262,14 @@ class PointNetSetAbstractionMsg(nn.Module):
         S = self.npoint
         new_xyz = index_points(xyz, farthest_point_sample(xyz, S))
         new_points_list = []
+        # 0.1 内取 16 个点，0.2 内取 32 个点，0.4 内取 128 个点
         for i, radius in enumerate(self.radius_list):
             K = self.nsample_list[i]
             group_idx = query_ball_point(radius, K, xyz, new_xyz)
             grouped_xyz = index_points(xyz, group_idx)
+            # (B,S,nsample,C) - (B, S, 1, C)，即组内所有采样点减去查询点的坐标，转相对坐标
             grouped_xyz -= new_xyz.view(B, S, 1, C)
+            # 点坐标与点特征通道拼接，(B,S,nsample,C+D)
             if points is not None:
                 grouped_points = index_points(points, group_idx)
                 grouped_points = torch.cat([grouped_points, grouped_xyz], dim=-1)
@@ -258,11 +277,13 @@ class PointNetSetAbstractionMsg(nn.Module):
                 grouped_points = grouped_xyz
 
             grouped_points = grouped_points.permute(0, 3, 2, 1)  # [B, D, K, S]
+            # @! SA 中的 PointNet 是不带 T-Net 的几层逐点 mlp + maxpooling
             for j in range(len(self.conv_blocks[i])):
                 conv = self.conv_blocks[i][j]
                 bn = self.bn_blocks[i][j]
                 grouped_points =  F.relu(bn(conv(grouped_points)))
             new_points = torch.max(grouped_points, 2)[0]  # [B, D', S]
+            # @! MSG, 多个不同半径的 SA 得到的组内"全局特征"拼接，(B,D,S=fps后得到的点的个数，即球查询所有查询点的个数)
             new_points_list.append(new_points)
 
         new_xyz = new_xyz.permute(0, 2, 1)
