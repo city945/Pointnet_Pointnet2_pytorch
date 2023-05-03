@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "train_classification",
+            "name": "train_classification_pointnet",
             "type": "python",
             "request": "launch",
             "program": "train_classification.py",
@@ -13,10 +13,24 @@
             "cwd": "${workspaceFolder}",
             "args": [
               "--model",
-              "pointnet2_cls_ssg",
+              "pointnet_cls",
               "--log_dir",
-              "pointnet2_cls_ssg"
+              "pointnet_cls"
             ]
-        }
+        },
+        {
+            "name": "train_classification_pointnet2",
+            "type": "python",
+            "request": "launch",
+            "program": "train_classification.py",
+            "justMyCode": true,
+            "cwd": "${workspaceFolder}",
+            "args": [
+              "--model",
+              "pointnet2_cls_msg",
+              "--log_dir",
+              "pointnet2_cls_msg"
+            ]
+        },
     ]
 }
